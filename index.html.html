@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>실시간 자막</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link id="fontLink" href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@500;700;900&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#eef1f5; --panel:#ffffff; --ink:#1b2230; --muted:#5b6578;
+    --line:#d5dbe4; --accent:#2f6fde; --accent-ink:#ffffff; --rec:#d93a3a;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#151a23; --panel:#1e2531; --ink:#e8ecf2; --muted:#9aa4b5;
+      --line:#2e3746; --accent:#6c9dff; --accent-ink:#0d1320; --rec:#ff6b6b;
+      color-scheme: dark;
+    }
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"Noto Sans KR","Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+    font-size:15px; line-height:1.55;
+  }
+  .wrap{max-width:1100px; margin:0 auto; padding:20px 20px 40px}
+  header{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:14px}
+  h1{font-size:20px; margin:0; font-weight:700}
+  .status{
+    display:inline-flex; align-items:center; gap:8px; padding:6px 12px;
+    border:1px solid var(--line); border-radius:999px; background:var(--panel);
+    font-size:13px; color:var(--muted)
+  }
+  .dot{width:9px; height:9px; border-radius:50%; background:var(--muted)}
+  .status.on .dot{background:var(--rec); animation:pulse 1.4s infinite}
+  .status.on{color:var(--ink)}
+  .status.err{color:var(--rec); border-color:var(--rec)}
+  @keyframes pulse{50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .status.on .dot{animation:none} }
+
+  .controls{display:flex; flex-wrap:wrap; gap:10px; margin:14px 0 18px}
+  button{
+    font:inherit; cursor:pointer; border-radius:10px; padding:11px 18px;
+    border:1px solid var(--line); background:var(--panel); color:var(--ink);
+  }
+  button:focus-visible, input:focus-visible, select:focus-visible{outline:3px solid var(--accent); outline-offset:2px}
+  button.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent); font-weight:700; min-width:150px}
+  button.primary.stop{background:var(--rec); border-color:var(--rec); color:#fff}
+  button:disabled{opacity:.5; cursor:not-allowed}
+
+  .panel{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px}
+  .panel h2{font-size:15px; margin:0 0 12px}
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px 18px}
+  label.field{display:flex; flex-direction:column; gap:6px; font-size:13px; color:var(--muted)}
+  input[type=text], select{
+    font:inherit; color:var(--ink); background:var(--bg); border:1px solid var(--line);
+    border-radius:8px; padding:9px 10px; width:100%
+  }
+  .full{grid-column:1/-1}
+  .row{display:flex; gap:8px; align-items:center}
+  .row input{flex:1}
+  .check{flex-direction:row; align-items:center; gap:8px; color:var(--ink); font-size:14px}
+  .hint{font-size:12.5px; color:var(--muted); margin:6px 0 0}
+  .msg{margin-top:10px; font-size:13px; min-height:1.2em}
+  .msg.ok{color:#1f9d55} .msg.bad{color:var(--rec)}
+  details summary{cursor:pointer; font-weight:700; font-size:15px}
+  details[open] summary{margin-bottom:14px}
+</style>
+
+<!-- 자막 화면 스타일 (떠 있는 창으로 그대로 복사됩니다) -->
+<style id="stageStyle">
+  .stage{
+    --sub-size:56px;
+    background:#000; color:#fff; border-radius:12px;
+    display:flex; flex-direction:column; justify-content:flex-end; align-items:center;
+    text-align:center; padding:22px 32px; min-height:240px; gap:.2em; overflow:hidden;
+    font-family:"Noto Sans JP","Noto Sans KR","Yu Gothic","Meiryo","Malgun Gothic",sans-serif;
+    box-sizing:border-box;
+  }
+  .stage .sub-prev{
+    font-size:calc(var(--sub-size) * .6); font-weight:700; opacity:.5; line-height:1.3;
+    -webkit-text-stroke:.05em #000; paint-order:stroke fill;
+  }
+  .stage .sub-main{
+    font-size:var(--sub-size); font-weight:900; line-height:1.28; max-width:100%;
+    -webkit-text-stroke:.06em #000; paint-order:stroke fill;
+    text-shadow:0 .04em .14em rgba(0,0,0,.85);
+    overflow-wrap:anywhere; line-break:strict;
+  }
+  .stage .sub-main.pending{opacity:.7}
+  .stage .sub-orig{
+    font-size:calc(var(--sub-size) * .4); color:#ffd84d; font-weight:500; line-height:1.35;
+    font-family:"Noto Sans KR","Malgun Gothic",sans-serif; margin-top:.3em;
+  }
+  .stage.hide-orig .sub-orig{display:none}
+  .stage.hide-prev .sub-prev{display:none}
+  .stage .placeholder{opacity:.35; font-weight:500; font-size:.55em; -webkit-text-stroke:0}
+  .stage:fullscreen{border-radius:0; padding:4vh 5vw 7vh}
+  html.pip, html.pip body{margin:0; height:100%; background:#000}
+  html.pip .stage{height:100%; min-height:0; border-radius:0; padding:12px 24px 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>실시간 자막</h1>
+    <span class="status" id="status"><span class="dot"></span><span id="statusText">대기 중</span></span>
+  </header>
+
+  <div class="stage" id="stage">
+    <div class="sub-prev" id="subPrev"></div>
+    <div class="sub-main" id="subMain"><span class="placeholder">시작을 누르고 말하면 여기에 자막이 나옵니다</span></div>
+    <div class="sub-orig" id="subOrig"></div>
+  </div>
+
+  <div class="controls">
+    <button class="primary" id="btnStart">자막 시작</button>
+    <button id="btnPip">자막 창 띄우기 (항상 위)</button>
+    <button id="btnFull">자막 전체 화면</button>
+    <button id="btnClear">자막 지우기</button>
+  </div>
+
+  <div class="panel">
+    <details id="settings">
+      <summary>설정</summary>
+      <div class="grid">
+        <label class="field full">번역 서버 주소 (Apps Script 웹 앱 URL)
+          <span class="row">
+            <input type="text" id="apiUrl" placeholder="https://script.google.com/macros/s/……/exec" spellcheck="false">
+            <button id="btnTest" type="button">연결 테스트</button>
+          </span>
+        </label>
+        <label class="field">말하는 언어
+          <select id="srcLang">
+            <option value="ko">한국어</option>
+            <option value="ja">일본어</option>
+            <option value="en">영어</option>
+          </select>
+        </label>
+        <label class="field">자막 언어
+          <select id="tgtLang">
+            <option value="ja">일본어</option>
+            <option value="ko">한국어</option>
+            <option value="en">영어</option>
+          </select>
+        </label>
+        <label class="field">글자 크기 <span id="sizeVal"></span>
+          <input type="range" id="fontSize" min="28" max="120" step="2">
+        </label>
+        <label class="field">말이 멈추면 자막 지우기
+          <select id="autoClear">
+            <option value="0">지우지 않음</option>
+            <option value="8">8초 뒤</option>
+            <option value="12">12초 뒤</option>
+            <option value="20">20초 뒤</option>
+          </select>
+        </label>
+        <label class="field check"><input type="checkbox" id="showOrig"> 원문(말한 내용)도 작게 표시</label>
+        <label class="field check"><input type="checkbox" id="liveTrans"> 말하는 도중에도 미리 번역 (더 빠름)</label>
+        <label class="field">자막 창 가로 길이 <span id="pipWVal"></span>
+          <input type="range" id="pipW" min="500" max="3840" step="20">
+        </label>
+        <label class="field">자막 창 세로 높이 <span id="pipHVal"></span>
+          <input type="range" id="pipH" min="90" max="700" step="10">
+        </label>
+        <label class="field check"><input type="checkbox" id="showPrev"> 바로 앞 문장도 흐리게 표시</label>
+        <div class="field full">
+          <span class="row" style="flex-wrap:wrap">
+            <button type="button" id="btnFit">화면 가로 전체로 맞추기</button>
+            <button type="button" id="btnApply">이 크기로 자막 창 다시 열기</button>
+          </span>
+          <span class="hint">자막 창은 마우스로 끌어서 위치를 옮기고, 가장자리를 끌어서 크기를 바꿀 수도 있어요. 다음에 열 때 마지막 위치가 기억됩니다.</span>
+        </div>
+      </div>
+      <p class="hint">처음 시작할 때 브라우저가 마이크 권한을 물으면 ‘허용’을 눌러 주세요. Chrome 또는 Edge에서만 동작합니다.</p>
+      <div class="msg" id="testMsg"></div>
+    </details>
+  </div>
+</div>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const stage = $('stage'), subPrev = $('subPrev'), subMain = $('subMain'), subOrig = $('subOrig');
+  const btnStart = $('btnStart'), statusEl = $('status'), statusText = $('statusText');
+
+  // ---------- 설정 저장/불러오기 ----------
+  const KEY = 'liveSubtitleSettings';
+  const SCREEN_W = Math.max(800, (window.screen && screen.availWidth) || 1600);
+  const defaults = { apiUrl:'', src:'ko', tgt:'ja', size:56, autoClear:'12', showOrig:true, liveTrans:true,
+                     pipW: SCREEN_W, pipH: 200, showPrev:true };
+  let cfg = Object.assign({}, defaults);
+  try { Object.assign(cfg, JSON.parse(localStorage.getItem(KEY) || '{}')); } catch(e){}
+  function save(){ try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch(e){} }
+
+  $('apiUrl').value = cfg.apiUrl;
+  $('srcLang').value = cfg.src;
+  $('tgtLang').value = cfg.tgt;
+  $('fontSize').value = cfg.size;
+  $('autoClear').value = cfg.autoClear;
+  $('showOrig').checked = cfg.showOrig;
+  $('liveTrans').checked = cfg.liveTrans;
+  $('pipW').max = Math.max(SCREEN_W, 600);
+  cfg.pipW = Math.min(cfg.pipW, SCREEN_W);
+  $('pipW').value = cfg.pipW;
+  $('pipH').value = cfg.pipH;
+  $('showPrev').checked = cfg.showPrev;
+  applyLook();
+  if(!cfg.apiUrl) $('settings').open = true;
+
+  function applyLook(){
+    stage.style.setProperty('--sub-size', cfg.size + 'px');
+    $('sizeVal').textContent = cfg.size + 'px';
+    stage.classList.toggle('hide-orig', !cfg.showOrig);
+    stage.classList.toggle('hide-prev', !cfg.showPrev);
+    $('pipWVal').textContent = cfg.pipW + 'px';
+    $('pipHVal').textContent = cfg.pipH + 'px';
+  }
+
+  $('apiUrl').addEventListener('change', e => { cfg.apiUrl = e.target.value.trim(); save(); });
+  $('srcLang').addEventListener('change', e => { cfg.src = e.target.value; save(); if(listening){ stopRec(); startRec(); } });
+  $('tgtLang').addEventListener('change', e => { cfg.tgt = e.target.value; save(); });
+  $('fontSize').addEventListener('input', e => { cfg.size = +e.target.value; applyLook(); save(); });
+  $('autoClear').addEventListener('change', e => { cfg.autoClear = e.target.value; save(); });
+  $('showOrig').addEventListener('change', e => { cfg.showOrig = e.target.checked; applyLook(); save(); });
+  $('liveTrans').addEventListener('change', e => { cfg.liveTrans = e.target.checked; save(); });
+  $('showPrev').addEventListener('change', e => { cfg.showPrev = e.target.checked; applyLook(); save(); });
+  $('pipW').addEventListener('input', e => { cfg.pipW = +e.target.value; applyLook(); save(); tryResize(); });
+  $('pipH').addEventListener('input', e => { cfg.pipH = +e.target.value; applyLook(); save(); tryResize(); });
+  $('btnFit').addEventListener('click', () => {
+    cfg.pipW = SCREEN_W; $('pipW').value = cfg.pipW; applyLook(); save();
+    if(pipWin) openPip();
+  });
+  $('btnApply').addEventListener('click', () => openPip());
+
+  // ---------- 상태 표시 ----------
+  function setStatus(text, mode){
+    statusText.textContent = text;
+    statusEl.classList.toggle('on', mode === 'on');
+    statusEl.classList.toggle('err', mode === 'err');
+  }
+
+  // ---------- 번역 ----------
+  async function translate(text){
+    if(cfg.src === cfg.tgt) return text;
+    const url = (cfg.apiUrl || '').trim();
+    if(!url) throw new Error('번역 서버 주소가 비어 있습니다');
+    const q = url + (url.includes('?') ? '&' : '?') +
+      'q=' + encodeURIComponent(text) + '&sl=' + cfg.src + '&tl=' + cfg.tgt;
+    const res = await fetch(q, { method:'GET', redirect:'follow' });
+    const data = await res.json();
+    if(!data.ok) throw new Error(data.error || '번역 실패');
+    return data.text;
+  }
+
+  $('btnTest').addEventListener('click', async () => {
+    cfg.apiUrl = $('apiUrl').value.trim(); save();
+    const msg = $('testMsg');
+    msg.className = 'msg'; msg.textContent = '확인 중…';
+    try {
+      const t = await translate(cfg.src === 'ko' ? '안녕하세요. 만나서 반갑습니다.' : 'Hello, nice to meet you.');
+      msg.className = 'msg ok'; msg.textContent = '연결 성공: ' + t;
+    } catch(err){
+      msg.className = 'msg bad';
+      msg.textContent = '연결 실패: 주소가 …/exec 로 끝나는지, 액세스 권한이 ‘모든 사용자’인지 확인하세요. (' + err.message + ')';
+    }
+  });
+
+  // ---------- 자막 화면 ----------
+  const view = { prevFinal:'', lastFinal:'', pending:'' };
+  let clearTimer = null;
+
+  function render(){
+    const hasAny = view.pending || view.lastFinal;
+    if(view.pending){
+      subPrev.textContent = view.lastFinal;
+      subMain.textContent = view.pending;
+      subMain.classList.add('pending');
+    } else {
+      subPrev.textContent = view.prevFinal;
+      subMain.textContent = view.lastFinal;
+      subMain.classList.remove('pending');
+    }
+    if(!hasAny){
+      subMain.innerHTML = '<span class="placeholder">' + (listening ? '듣고 있어요…' : '시작을 누르고 말하면 여기에 자막이 나옵니다') + '</span>';
+    }
+    armClear();
+  }
+
+  function armClear(){
+    clearTimeout(clearTimer);
+    const sec = +cfg.autoClear;
+    if(sec > 0) clearTimer = setTimeout(clearAll, sec * 1000);
+  }
+
+  function clearAll(){
+    view.prevFinal = view.lastFinal = view.pending = '';
+    subOrig.textContent = '';
+    clearTimeout(clearTimer);
+    render();
+    clearTimeout(clearTimer);
+  }
+  $('btnClear').addEventListener('click', clearAll);
+
+  // ---------- 순서 관리 ----------
+  let seq = 0, lastFinalIssued = 0, lastFinalApplied = 0;
+  let lastInterimSent = '', lastInterimAt = 0;
+
+  function onFinal(text){
+    const my = ++seq; lastFinalIssued = my;
+    subOrig.textContent = text;
+    translate(text).then(t => {
+      if(my <= lastFinalApplied) return;
+      lastFinalApplied = my;
+      view.prevFinal = view.lastFinal;
+      view.lastFinal = t;
+      view.pending = '';
+      render();
+      setStatus('듣는 중', 'on');
+    }).catch(err => setStatus('번역 오류: ' + err.message, 'err'));
+  }
+
+  function onInterim(text){
+    subOrig.textContent = text;
+    if(!cfg.liveTrans || cfg.src === cfg.tgt) return;
+    const now = Date.now();
+    if(text.length < 6 || text === lastInterimSent || now - lastInterimAt < 1200) return;
+    lastInterimSent = text; lastInterimAt = now;
+    const my = ++seq;
+    translate(text).then(t => {
+      if(my < lastFinalIssued) return;      // 이미 문장이 끝난 뒤 도착한 미리보기는 버림
+      view.pending = t;
+      render();
+    }).catch(()=>{});
+  }
+
+  // ---------- 음성 인식 ----------
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const LOCALE = { ko:'ko-KR', ja:'ja-JP', en:'en-US' };
+  let rec = null, listening = false;
+
+  if(!SR){
+    btnStart.disabled = true;
+    setStatus('이 브라우저는 음성 인식을 지원하지 않아요. Chrome이나 Edge로 열어 주세요.', 'err');
+  }
+
+  function startRec(){
+    if(!cfg.apiUrl && cfg.src !== cfg.tgt){
+      $('settings').open = true;
+      setStatus('먼저 설정에 번역 서버 주소를 넣어 주세요', 'err');
+      return;
+    }
+    rec = new SR();
+    rec.lang = LOCALE[cfg.src] || 'ko-KR';
+    rec.continuous = true;
+    rec.interimResults = true;
+
+    rec.onresult = e => {
+      let interim = '';
+      for(let i = e.resultIndex; i < e.results.length; i++){
+        const r = e.results[i];
+        if(r.isFinal){
+          const t = r[0].transcript.trim();
+          if(t) onFinal(t);
+        } else {
+          interim += r[0].transcript;
+        }
+      }
+      interim = interim.trim();
+      if(interim) onInterim(interim);
+    };
+    rec.onerror = e => {
+      if(e.error === 'not-allowed' || e.error === 'service-not-allowed'){
+        listening = false; updateBtn();
+        setStatus('마이크 권한이 막혀 있어요. 주소창 왼쪽 아이콘에서 마이크를 허용해 주세요.', 'err');
+      } else if(e.error === 'audio-capture'){
+        listening = false; updateBtn();
+        setStatus('마이크를 찾을 수 없어요. 연결 상태를 확인해 주세요.', 'err');
+      }
+      // no-speech, network 등은 onend에서 자동 재시작
+    };
+    rec.onend = () => {
+      if(listening){
+        setTimeout(() => { if(listening){ try{ rec.start(); }catch(_){} } }, 250);
+      }
+    };
+
+    try { rec.start(); } catch(_){}
+    listening = true; updateBtn();
+    setStatus('듣는 중', 'on');
+    render();
+  }
+
+  function stopRec(){
+    listening = false;
+    if(rec){ try{ rec.stop(); }catch(_){} }
+    updateBtn();
+    setStatus('대기 중');
+    render();
+  }
+
+  function updateBtn(){
+    btnStart.textContent = listening ? '자막 멈추기' : '자막 시작';
+    btnStart.classList.toggle('stop', listening);
+  }
+
+  btnStart.addEventListener('click', () => listening ? stopRec() : startRec());
+
+  // ---------- 떠 있는 자막 창 (Document Picture-in-Picture) ----------
+  let pipWin = null;
+  const stageHome = stage.parentNode, stageNext = stage.nextSibling;
+
+  function tryResize(){
+    if(!pipWin) return;
+    try { pipWin.resizeTo(cfg.pipW, cfg.pipH); } catch(_){}
+  }
+
+  async function openPip(){
+    if(!('documentPictureInPicture' in window)){
+      alert('이 브라우저는 떠 있는 자막 창을 지원하지 않아요. 최신 Chrome 또는 Edge를 사용하거나 ‘자막 전체 화면’을 이용해 주세요.');
+      return;
+    }
+    const w = await documentPictureInPicture.requestWindow({ width: cfg.pipW, height: cfg.pipH });
+    pipWin = w;
+    const d = w.document;
+    d.documentElement.classList.add('pip');
+    d.title = '자막';
+    const link = d.createElement('link');
+    link.rel = 'stylesheet'; link.href = $('fontLink').href;
+    d.head.appendChild(link);
+    const st = d.createElement('style');
+    st.textContent = $('stageStyle').textContent;
+    d.head.appendChild(st);
+    d.body.appendChild(stage);
+    w.addEventListener('pagehide', () => {
+      if(pipWin !== w) return;           // 새 창으로 교체된 경우는 무시
+      stageHome.insertBefore(stage, stageNext);
+      pipWin = null;
+    });
+  }
+
+  $('btnPip').addEventListener('click', () => openPip());
+
+  // ---------- 전체 화면 ----------
+  $('btnFull').addEventListener('click', () => {
+    if(document.fullscreenElement) document.exitFullscreen();
+    else if(stage.requestFullscreen) stage.requestFullscreen();
+  });
+})();
+</script>
+</body>
+</html>
